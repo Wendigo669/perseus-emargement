@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<!--
+  L'ADRESSE DE LA FONCTION « emarger ». Vide quand la page est servie par la
+  fonction elle-même ; renseignée par `npm run page-emargement` quand la
+  page est publiée ailleurs. Aucune clé ici : ce sont les codes qui ouvrent.
+-->
+<meta name="emarger-api" content="https://rrjuznebeoftwojwvpyg.supabase.co/functions/v1/emarger">
+<title>Émargement</title>
+<style>
+  :root {
+    --marine: #0d2137; --or: #c9a646; --fond: #f4f5f8; --texte: #14202e;
+    --ok: #15803d; --danger: #b91c1c; --gris: #6b7280; --bord: #d6dae1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--fond); color: var(--texte);
+    font: 18px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { background: var(--marine); color: #fff; padding: 14px 16px; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 2px 0 0; font-size: 14px; color: #cfd6e0; }
+  main { padding: 16px; max-width: 640px; margin: 0 auto; }
+  h2 { font-size: 20px; margin: 18px 0 10px; color: var(--marine); }
+  button, .bouton { display: block; width: 100%; min-height: 56px; margin: 10px 0;
+    border: 0; border-radius: 12px; font-size: 19px; font-weight: 600;
+    background: var(--marine); color: #fff; cursor: pointer; padding: 10px 14px; }
+  button.secondaire { background: #fff; color: var(--marine); border: 2px solid var(--marine); }
+  button.danger { background: var(--danger); }
+  button.petit { display: inline-block; width: auto; min-height: 40px; font-size: 15px; margin: 0 0 0 6px; padding: 6px 12px; }
+  button:disabled { opacity: .5; }
+  input[type=text] { width: 100%; font-size: 30px; letter-spacing: 6px; text-align: center;
+    text-transform: uppercase; padding: 12px; border: 2px solid var(--bord); border-radius: 12px; }
+  .erreur { background: #fde8e8; color: var(--danger); border-radius: 10px; padding: 12px 14px;
+    margin: 12px 0; font-weight: 600; }
+  .info { background: #e8f3ec; color: var(--ok); border-radius: 10px; padding: 12px 14px; margin: 12px 0; font-weight: 600; }
+  .carte { background: #fff; border-radius: 12px; padding: 12px 14px; margin: 10px 0; border: 1px solid var(--bord); }
+  .nom { display: block; width: 100%; text-align: left; background: #fff; color: var(--texte);
+    border: 2px solid var(--bord); font-size: 21px; }
+  .ligne { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 10px 0; border-bottom: 1px solid var(--bord); }
+  .ligne:last-child { border-bottom: 0; }
+  .etat-ok { color: var(--ok); font-weight: 700; }
+  .etat-absent { color: var(--danger); font-weight: 700; }
+  .etat-attente { color: var(--gris); }
+  .code { font-size: 46px; font-weight: 800; letter-spacing: 8px; text-align: center; color: var(--marine); margin: 6px 0; }
+  #qr { display: flex; justify-content: center; margin: 8px 0; }
+  #qr img, #qr svg { width: 240px; height: 240px; image-rendering: pixelated; }
+  canvas.pad { width: 100%; height: 220px; background: #fff; border: 2px dashed var(--marine);
+    border-radius: 12px; touch-action: none; display: block; }
+  .discret { color: var(--gris); font-size: 14px; }
+  .cache { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Émargement</h1>
+  <p id="sous-titre">Signature de présence à la formation</p>
+</header>
+<main id="ecran"></main>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js" integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k" crossorigin="anonymous"></script>
+<script>
+'use strict';
+/*
+  La page d'émargement — un seul fichier, aucune donnée stockée sur le
+  téléphone, aucune clé. Deux modes :
+    · candidat  : un code (ou le QR code), son nom, sa signature ;
+    · formateur : son code, la session, l'ouverture d'une demi-journée,
+      le suivi en direct, la fermeture signée.
+  Tout échec s'affiche en clair, jamais d'échec silencieux.
+*/
+var API = (document.querySelector('meta[name="emarger-api"]').content || '').trim()
+  || (location.origin + location.pathname);
+var PAGE = location.origin + location.pathname;
+var MOMENTS = { matin: 'Matin', apres_midi: 'Après-midi' };
+var ecran = document.getElementById('ecran');
+var minuterie = null;
+
+function el(balise, attributs, enfants) {
+  var n = document.createElement(balise);
+  Object.keys(attributs || {}).forEach(function (k) {
+    if (k === 'onclick') n.onclick = attributs[k];
+    else if (k === 'texte') n.textContent = attributs[k];
+    else n.setAttribute(k, attributs[k]);
+  });
+  (enfants || []).forEach(function (e) { if (e) n.appendChild(typeof e === 'string' ? document.createTextNode(e) : e); });
+  return n;
+}
+function vider() { if (minuterie) { clearInterval(minuterie); minuterie = null; } ecran.innerHTML = ''; window.scrollTo(0, 0); }
+function erreur(texte) { return el('div', { class: 'erreur', role: 'alert', texte: texte }); }
+function jourFr(iso) {
+  var d = new Date(iso + 'T12:00:00');
+  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+function heure(iso) { return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
+function nomComplet(p) { return (p.prenom + ' ' + (p.nom || '').toUpperCase()).trim(); }
+
+function appeler(action, donnees) {
+  var corps = Object.assign({ action: action }, donnees || {});
+  return fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corps) })
+    .then(function (r) {
+      return r.json().catch(function () { return { erreur: 'Réponse illisible du serveur (' + r.status + ').' }; });
+    }, function () {
+      return { erreur: 'Pas de connexion. Vérifiez le réseau du téléphone, puis réessayez.' };
+    })
+    .then(function (rep) { if (rep.erreur) throw new Error(rep.erreur); return rep; });
+}
+
+/* ─────────────── le pavé de signature : au doigt, exporté en PNG ─────────────── */
+function padSignature() {
+  var canvas = el('canvas', { class: 'pad', 'aria-label': 'Zone de signature' });
+  var ctx, trace = false, dessine = false;
+  function dimensionner() {
+    var r = canvas.getBoundingClientRect(), k = window.devicePixelRatio || 1;
+    canvas.width = Math.round(r.width * k); canvas.height = Math.round(r.height * k);
+    ctx = canvas.getContext('2d'); ctx.scale(k, k);
+    ctx.lineWidth = 2.6; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0d2137';
+  }
+  function point(e) { var r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  canvas.addEventListener('pointerdown', function (e) {
+    if (!ctx) dimensionner();
+    trace = true; canvas.setPointerCapture(e.pointerId);
+    var p = point(e); ctx.beginPath(); ctx.moveTo(p.x, p.y);
+  });
+  canvas.addEventListener('pointermove', function (e) {
+    if (!trace) return; var p = point(e); ctx.lineTo(p.x, p.y); ctx.stroke(); dessine = true;
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (t) {
+    canvas.addEventListener(t, function () { trace = false; });
+  });
+  return {
+    noeud: canvas,
+    effacer: function () { if (ctx) { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore(); } dessine = false; },
+    vide: function () { return !dessine; },
+    // Réduite à 600 × 220 : une signature, pas une photo.
+    png: function () {
+      var c = document.createElement('canvas'); c.width = 600; c.height = 220;
+      var x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, 600, 220);
+      x.drawImage(canvas, 0, 0, 600, 220);
+      return c.toDataURL('image/png');
+    },
+  };
+}
+
+function ecranSignature(titre, sousTitre, surConfirmer, surRetour) {
+  vider();
+  var pad = padSignature();
+  var zoneErreur = el('div');
+  var confirmer = el('button', { texte: 'Confirmer' });
+  confirmer.onclick = function () {
+    zoneErreur.innerHTML = '';
+    if (pad.vide()) { zoneErreur.appendChild(erreur('Signez dans le cadre avec le doigt.')); return; }
+    confirmer.disabled = true; confirmer.textContent = 'Envoi…';
+    surConfirmer(pad.png()).catch(function (e) {
+      zoneErreur.appendChild(erreur(e.message));
+      confirmer.disabled = false; confirmer.textContent = 'Confirmer';
+    });
+  };
+  ecran.append(
+    el('h2', { texte: titre }),
+    el('p', { class: 'discret', texte: sousTitre }),
+    pad.noeud,
+    el('button', { class: 'secondaire', texte: 'Effacer', onclick: pad.effacer }),
+    zoneErreur,
+    confirmer,
+    el('button', { class: 'secondaire', texte: 'Retour', onclick: surRetour }),
+  );
+}
+
+/* ───────────────────────────── accueil ───────────────────────────── */
+function accueil(message) {
+  vider();
+  ecran.append(
+    message ? erreur(message) : null,
+    el('h2', { texte: 'Qui êtes-vous ?' }),
+    el('button', { texte: 'Je suis stagiaire', onclick: function () { saisieCode('candidat'); } }),
+    el('button', { class: 'secondaire', texte: 'Je suis le formateur', onclick: function () { saisieCode('formateur'); } }),
+  );
+}
+
+function saisieCode(mode, message) {
+  vider();
+  var champ = el('input', { type: 'text', maxlength: '8', autocomplete: 'off', autocapitalize: 'characters', inputmode: 'text', 'aria-label': 'Code' });
+  var valider = el('button', { texte: 'Valider' });
+  valider.onclick = function () {
+    var code = champ.value.toUpperCase().replace(/[\s-]+/g, '');
+    if (code.length !== 6) { saisieCode(mode, 'Le code fait six caractères.'); return; }
+    if (mode === 'candidat') listeCandidat(code); else formateur(code);
+  };
+  ecran.append(
+    el('h2', { texte: mode === 'candidat' ? 'Code donné par le formateur' : 'Votre code formateur' }),
+    el('p', { class: 'discret', texte: mode === 'candidat'
+      ? 'Six lettres ou chiffres, affichés sur le téléphone du formateur.'
+      : 'Il est imprimé sur votre convocation.' }),
+    champ, message ? erreur(message) : null, valider,
+    el('button', { class: 'secondaire', texte: 'Retour', onclick: function () { accueil(); } }),
+  );
+  champ.focus();
+}
+
+/* ───────────────────────────── candidat ───────────────────────────── */
+function listeCandidat(code, retourFormateur, message) {
+  vider();
+  ecran.append(el('p', { class: 'discret', texte: 'Chargement…' }));
+  appeler('candidat.liste', { code: code }).then(function (rep) {
+    vider();
+    ecran.append(
+      message ? el('div', { class: 'info', role: 'status', texte: message }) : null,
+      el('h2', { texte: jourFr(rep.jour) + ' — ' + MOMENTS[rep.moment] }),
+    );
+    if (!rep.aSigner.length) {
+      ecran.append(el('div', { class: 'info', texte: 'Tout le monde a signé. Merci !' }));
+    } else {
+      ecran.append(el('p', { texte: 'Touchez votre nom :' }));
+      rep.aSigner.forEach(function (p) {
+        ecran.append(el('button', { class: 'nom', texte: nomComplet(p), onclick: function () {
+          ecranSignature(nomComplet(p), 'Signez avec le doigt dans le cadre, puis touchez « Confirmer ».',
+            function (image) {
+              return appeler('candidat.signer', { code: code, participantId: p.id, image: image })
+                .then(function () { listeCandidat(code, retourFormateur, 'C’est signé. Merci ' + p.prenom + ' !'); });
+            },
+            function () { listeCandidat(code, retourFormateur); });
+        } }));
+      });
+    }
+    ecran.append(el('button', { class: 'secondaire', texte: 'Actualiser', onclick: function () { listeCandidat(code, retourFormateur); } }));
+    if (retourFormateur) ecran.append(el('button', { class: 'secondaire', texte: 'Retour au mode formateur', onclick: retourFormateur }));
+  }).catch(function (e) {
+    if (retourFormateur) { vider(); ecran.append(erreur(e.message), el('button', { texte: 'Retour au mode formateur', onclick: retourFormateur })); }
+    else saisieCode('candidat', e.message);
+  });
+}
+
+/* ───────────────────────────── formateur ───────────────────────────── */
+function formateur(code, message) {
+  vider();
+  ecran.append(el('p', { class: 'discret', texte: 'Chargement…' }));
+  appeler('formateur.etat', { code: code }).then(function (etat) { afficherFormateur(code, etat, message); })
+    .catch(function (e) { saisieCode('formateur', e.message); });
+}
+
+function afficherFormateur(code, etat, message) {
+  vider();
+  document.getElementById('sous-titre').textContent = 'Session ' + etat.session.numero;
+  var ouverte = etat.demiJournees.filter(function (d) { return d.ouverte; })[0];
+  ecran.append(
+    message ? erreur(message) : null,
+    el('div', { class: 'carte' }, [
+      el('strong', { texte: etat.session.formations.join(' + ') }), el('br'),
+      el('span', { class: 'discret', texte: etat.session.lieu }),
+    ]),
+  );
+  if (ouverte) { suiviDemiJournee(code, etat, ouverte); return; }
+
+  var duJour = etat.demiJournees.filter(function (d) { return d.jour === etat.aujourdhui; });
+  ecran.append(el('h2', { texte: 'Aujourd’hui, ' + jourFr(etat.aujourdhui) }));
+  if (!duJour.length) ecran.append(el('p', { texte: 'Aucune demi-journée de formation aujourd’hui.' }));
+  duJour.forEach(function (d) {
+    if (d.fermee) {
+      ecran.append(el('div', { class: 'info', texte: MOMENTS[d.moment] + ' : fermé et signé.' }));
+    } else {
+      ecran.append(el('button', { texte: 'Ouvrir l’émargement — ' + MOMENTS[d.moment], onclick: function () {
+        appeler('formateur.ouvrir', { code: code, demiJourneeId: d.id })
+          .then(function (e) { afficherFormateur(code, e); })
+          .catch(function (e) { afficherFormateur(code, etat, e.message); });
+      } }));
+    }
+  });
+  ecran.append(el('button', { class: 'secondaire', texte: 'Actualiser', onclick: function () { formateur(code); } }));
+}
+
+function suiviDemiJournee(code, etat, d) {
+  var lien = PAGE + '#c=' + d.codeCandidat;
+  var zoneQr = el('div', { id: 'qr' });
+  try {
+    var qr = qrcode(0, 'M'); qr.addData(lien); qr.make();
+    zoneQr.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
+  } catch (e) {
+    zoneQr.appendChild(erreur('QR code indisponible : les stagiaires tapent le code ci-dessous.'));
+  }
+  var liste = el('div', { class: 'carte' });
+  var zoneErreur = el('div');
+
+  function dessinerListe(dj) {
+    liste.innerHTML = '';
+    etat.participants.forEach(function (p) {
+      var l = dj.lignes.filter(function (x) { return x.participantId === p.id; })[0];
+      var statut = !l ? el('span', { class: 'etat-attente', texte: 'en attente' })
+        : l.statut === 'absent' ? el('span', { class: 'etat-absent', texte: 'absent' })
+          : el('span', { class: 'etat-ok', texte: 'signé ' + heure(l.signeLe) });
+      var actions = el('span');
+      if (l) {
+        actions.appendChild(el('button', { class: 'petit secondaire', texte: 'Annuler', onclick: function () {
+          if (!confirm('Annuler la ligne de ' + nomComplet(p) + ' ?')) return;
+          appeler('formateur.annuler', { code: code, signatureId: l.id }).then(rafraichir)
+            .catch(function (e) { zoneErreur.innerHTML = ''; zoneErreur.appendChild(erreur(e.message)); });
+        } }));
+      } else {
+        actions.appendChild(el('button', { class: 'petit danger', texte: 'Absent', onclick: function () {
+          if (!confirm('Marquer ' + nomComplet(p) + ' absent ?')) return;
+          appeler('formateur.absent', { code: code, demiJourneeId: dj.id, participantId: p.id }).then(rafraichir)
+            .catch(function (e) { zoneErreur.innerHTML = ''; zoneErreur.appendChild(erreur(e.message)); });
+        } }));
+      }
+      liste.appendChild(el('div', { class: 'ligne' }, [
+        el('span', {}, [el('strong', { texte: nomComplet(p) }), el('br'), statut]), actions,
+      ]));
+    });
+  }
+
+  function rafraichir() {
+    return appeler('formateur.etat', { code: code }).then(function (e) {
+      etat = e;
+      var dj = e.demiJournees.filter(function (x) { return x.id === d.id; })[0];
+      if (!dj || !dj.ouverte) { afficherFormateur(code, e); return; }
+      zoneErreur.innerHTML = '';
+      dessinerListe(dj);
+    }).catch(function (e) { zoneErreur.innerHTML = ''; zoneErreur.appendChild(erreur(e.message)); });
+  }
+
+  ecran.append(
+    el('h2', { texte: jourFr(d.jour) + ' — ' + MOMENTS[d.moment] + ' : ouvert' }),
+    el('p', { class: 'discret', texte: 'Les stagiaires scannent le QR code, ou tapent ce code :' }),
+    zoneQr,
+    el('div', { class: 'code', texte: d.codeCandidat }),
+    el('button', { class: 'secondaire', texte: 'Faire signer sur ce téléphone', onclick: function () {
+      listeCandidat(d.codeCandidat, function () { formateur(code); });
+    } }),
+    el('h2', { texte: 'Présences' }),
+    zoneErreur, liste,
+    el('button', { texte: 'Fermer la demi-journée et signer', onclick: function () {
+      var enAttente = etat.participants.filter(function (p) {
+        return !d.lignes.some(function (x) { return x.participantId === p.id; });
+      }).length;
+      ecranSignature('Signature du formateur',
+        (enAttente ? enAttente + ' stagiaire(s) sans signature seront notés absents sur la feuille. ' : '')
+          + 'Une fois fermée, la demi-journée ne se modifie plus.',
+        function (image) {
+          return appeler('formateur.fermer', { code: code, demiJourneeId: d.id, image: image })
+            .then(function (e) { afficherFormateur(code, e); });
+        },
+        function () { formateur(code); });
+    } }),
+  );
+  dessinerListe(d);
+  // Le suivi en direct : la liste se met à jour toute seule.
+  minuterie = setInterval(function () {
+    rafraichir().then(function () {
+      d = (etat.demiJournees.filter(function (x) { return x.id === d.id; })[0]) || d;
+    });
+  }, 5000);
+}
+
+/* ───────────────────────────── démarrage ───────────────────────────── */
+var parametre = /[#&]c=([A-Za-z0-9]{6})/.exec(location.hash);
+if (parametre) listeCandidat(parametre[1].toUpperCase()); else accueil();
+</script>
+</body>
+</html>
