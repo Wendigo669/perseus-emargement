@@ -52,6 +52,9 @@
     border-radius: 12px; touch-action: none; display: block; }
   .discret { color: var(--gris); font-size: 14px; }
   .cache { display: none; }
+  .haut { text-align: right; margin: -6px 0 4px; }
+  button.lien { display: inline; width: auto; min-height: 0; margin: 0; padding: 6px 0;
+    background: none; color: var(--marine); border: 0; font-size: 16px; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -171,13 +174,24 @@ function ecranSignature(titre, sousTitre, surConfirmer, surRetour) {
 }
 
 /* ───────────────────────────── accueil ───────────────────────────── */
+/*
+  Le formateur arrive souvent par le QR code ou le lien d'un stagiaire :
+  le passage en mode formateur se voit en haut de chaque écran stagiaire,
+  pas seulement à l'accueil.
+*/
+function lienFormateur() {
+  return el('div', { class: 'haut' }, [
+    el('button', { class: 'lien', texte: 'Je suis le formateur', onclick: function () { saisieCode('formateur'); } }),
+  ]);
+}
+
 function accueil(message) {
   vider();
   ecran.append(
     message ? erreur(message) : null,
     el('h2', { texte: 'Qui êtes-vous ?' }),
     el('button', { texte: 'Je suis stagiaire', onclick: function () { saisieCode('candidat'); } }),
-    el('button', { class: 'secondaire', texte: 'Je suis le formateur', onclick: function () { saisieCode('formateur'); } }),
+    el('button', { texte: 'Je suis le formateur', onclick: function () { saisieCode('formateur'); } }),
   );
 }
 
@@ -191,6 +205,7 @@ function saisieCode(mode, message) {
     if (mode === 'candidat') listeCandidat(code); else formateur(code);
   };
   ecran.append(
+    mode === 'candidat' ? lienFormateur() : null,
     el('h2', { texte: mode === 'candidat' ? 'Code donné par le formateur' : 'Votre code formateur' }),
     el('p', { class: 'discret', texte: mode === 'candidat'
       ? 'Six lettres ou chiffres, affichés sur le téléphone du formateur.'
@@ -202,12 +217,19 @@ function saisieCode(mode, message) {
 }
 
 /* ───────────────────────────── candidat ───────────────────────────── */
-function listeCandidat(code, retourFormateur, message) {
+/*
+  `pret` : le téléphone du formateur, prêté en mode stagiaire — son code
+  et le retour au mode formateur. Le code accompagne chaque signature :
+  la fonction le vérifie, et le journal d'émargement dit « mode formateur ».
+*/
+function listeCandidat(code, pret, message) {
+  var retourFormateur = pret ? pret.retour : null;
   vider();
   ecran.append(el('p', { class: 'discret', texte: 'Chargement…' }));
   appeler('candidat.liste', { code: code }).then(function (rep) {
     vider();
     ecran.append(
+      pret ? null : lienFormateur(),
       message ? el('div', { class: 'info', role: 'status', texte: message }) : null,
       el('h2', { texte: jourFr(rep.jour) + ' — ' + MOMENTS[rep.moment] }),
     );
@@ -219,14 +241,16 @@ function listeCandidat(code, retourFormateur, message) {
         ecran.append(el('button', { class: 'nom', texte: nomComplet(p), onclick: function () {
           ecranSignature(nomComplet(p), 'Signez avec le doigt dans le cadre, puis touchez « Confirmer ».',
             function (image) {
-              return appeler('candidat.signer', { code: code, participantId: p.id, image: image })
-                .then(function () { listeCandidat(code, retourFormateur, 'C’est signé. Merci ' + p.prenom + ' !'); });
+              var corps = { code: code, participantId: p.id, image: image };
+              if (pret) corps.codeFormateur = pret.codeFormateur;
+              return appeler('candidat.signer', corps)
+                .then(function () { listeCandidat(code, pret, 'C’est signé. Merci ' + p.prenom + ' !'); });
             },
-            function () { listeCandidat(code, retourFormateur); });
+            function () { listeCandidat(code, pret); });
         } }));
       });
     }
-    ecran.append(el('button', { class: 'secondaire', texte: 'Actualiser', onclick: function () { listeCandidat(code, retourFormateur); } }));
+    ecran.append(el('button', { class: 'secondaire', texte: 'Actualiser', onclick: function () { listeCandidat(code, pret); } }));
     if (retourFormateur) ecran.append(el('button', { class: 'secondaire', texte: 'Retour au mode formateur', onclick: retourFormateur }));
   }).catch(function (e) {
     if (retourFormateur) { vider(); ecran.append(erreur(e.message), el('button', { texte: 'Retour au mode formateur', onclick: retourFormateur })); }
@@ -327,7 +351,7 @@ function suiviDemiJournee(code, etat, d) {
     zoneQr,
     el('div', { class: 'code', texte: d.codeCandidat }),
     el('button', { class: 'secondaire', texte: 'Faire signer sur ce téléphone', onclick: function () {
-      listeCandidat(d.codeCandidat, function () { formateur(code); });
+      listeCandidat(d.codeCandidat, { codeFormateur: code, retour: function () { formateur(code); } });
     } }),
     el('h2', { texte: 'Présences' }),
     zoneErreur, liste,
