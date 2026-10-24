@@ -53,6 +53,12 @@
   .discret { color: var(--gris); font-size: 14px; }
   .cache { display: none; }
   .haut { text-align: right; margin: -6px 0 4px; }
+  .question { background: #fff; border: 1px solid var(--bord); border-radius: 12px; padding: 10px 12px; margin: 10px 0; }
+  .niveaux { display: flex; gap: 6px; margin-top: 6px; }
+  .niveaux button { margin: 0; min-height: 48px; font-size: 15px; padding: 6px; background: #fff; color: var(--marine); border: 2px solid var(--bord); }
+  .niveaux button.choisi { background: var(--marine); color: #fff; border-color: var(--marine); }
+  textarea { width: 100%; min-height: 80px; font: inherit; font-size: 16px; padding: 8px; border: 2px solid var(--bord); border-radius: 10px; }
+  input[type=email] { width: 100%; font-size: 18px; padding: 10px; border: 2px solid var(--bord); border-radius: 10px; }
   button.lien { display: inline; width: auto; min-height: 0; margin: 0; padding: 6px 0;
     background: none; color: var(--marine); border: 0; font-size: 16px; text-decoration: underline; }
 </style>
@@ -244,7 +250,15 @@ function listeCandidat(code, pret, message) {
               var corps = { code: code, participantId: p.id, image: image };
               if (pret) corps.codeFormateur = pret.codeFormateur;
               return appeler('candidat.signer', corps)
-                .then(function () { listeCandidat(code, pret, 'C’est signé. Merci ' + p.prenom + ' !'); });
+                .then(function (rep) {
+                  var merci = 'C’est signé. Merci ' + p.prenom + ' !';
+                  // La dernière signature de la session : le questionnaire à chaud.
+                  if (rep.questionnaireJeton) {
+                    questionnaire(rep.questionnaireJeton, function (fait) {
+                      listeCandidat(code, pret, fait ? 'Merci pour vos réponses, ' + p.prenom + ' !' : merci);
+                    });
+                  } else listeCandidat(code, pret, merci);
+                });
             },
             function () { listeCandidat(code, pret); });
         } }));
@@ -255,6 +269,87 @@ function listeCandidat(code, pret, message) {
   }).catch(function (e) {
     if (retourFormateur) { vider(); ecran.append(erreur(e.message), el('button', { texte: 'Retour au mode formateur', onclick: retourFormateur })); }
     else saisieCode('candidat', e.message);
+  });
+}
+
+/* ───────────────────────────── questionnaire ───────────────────────────── */
+/*
+  Les questions viennent de la fonction, qui les lit dans
+  `_shared/questionnaires.ts` — les mêmes que sur papier, mot pour mot.
+  `suite(fait)` : après la réponse (ou « Passer » à chaud) ; absent pour un
+  lien reçu par mail.
+*/
+function questionnaire(jeton, suite) {
+  vider();
+  ecran.append(el('p', { class: 'discret', texte: 'Chargement…' }));
+  appeler('questionnaire.lire', { jeton: jeton }).then(function (q) {
+    vider();
+    var niveaux = {}, raisons = {}, libres = {};
+    var email = null;
+    var zoneErreur = el('div');
+    ecran.append(
+      el('h2', { texte: q.questionnaire.titre }),
+      el('p', { class: 'discret', texte: q.formation + ' — ' + q.prenom + ' ' + (q.nom || '').toUpperCase() }),
+    );
+    if (q.questionnaire.avertissement.length) {
+      ecran.append(el('div', { class: 'info' }, q.questionnaire.avertissement.map(function (l) { return el('div', { texte: l }); })));
+    }
+    q.questionnaire.groupes.forEach(function (g) {
+      if (g.titre) ecran.append(el('h2', { texte: g.titre }));
+      g.questions.forEach(function (question) {
+        var boutons = q.niveaux.map(function (n) {
+          var b = el('button', { type: 'button', texte: n.libelle });
+          b.onclick = function () {
+            niveaux[question] = n.cle;
+            boutons.forEach(function (x) { x.className = ''; });
+            b.className = 'choisi';
+          };
+          return b;
+        });
+        var bloc = el('div', { class: 'question' }, [el('strong', { texte: question }), el('div', { class: 'niveaux' }, boutons)]);
+        if (g.raison) {
+          var raison = el('textarea', { 'aria-label': g.raison + ' — ' + question, placeholder: g.raison });
+          raison.oninput = function () { raisons[question] = raison.value; };
+          bloc.appendChild(raison);
+        }
+        ecran.append(bloc);
+      });
+    });
+    q.questionnaire.libres.forEach(function (intitule) {
+      var zone = el('textarea', { 'aria-label': intitule });
+      zone.oninput = function () { libres[intitule] = zone.value; };
+      ecran.append(el('p', {}, [el('strong', { texte: intitule })]), zone);
+    });
+    if (!q.emailConnu) {
+      email = el('input', { type: 'email', autocomplete: 'email', 'aria-label': 'Votre e-mail' });
+      ecran.append(
+        el('p', {}, [el('strong', { texte: 'Votre e-mail' })]),
+        el('p', { class: 'discret', texte: 'Pour recevoir le questionnaire de suivi, dans quelques mois. Facultatif.' }),
+        email,
+      );
+    }
+    var envoyer = el('button', { texte: 'Envoyer mes réponses' });
+    envoyer.onclick = function () {
+      zoneErreur.innerHTML = '';
+      envoyer.disabled = true;
+      appeler('questionnaire.repondre', {
+        jeton: jeton, email: email ? email.value : '',
+        reponses: { niveaux: niveaux, raisons: raisons, libres: libres },
+      }).then(function () {
+        if (suite) { suite(true); return; }
+        vider();
+        ecran.append(el('div', { class: 'info', role: 'status', texte: 'Merci ! Vos réponses sont enregistrées.' }));
+      }).catch(function (e) {
+        zoneErreur.appendChild(erreur(e.message));
+        envoyer.disabled = false;
+      });
+    };
+    ecran.append(zoneErreur, envoyer);
+    if (suite) ecran.append(el('button', { class: 'secondaire', texte: 'Passer', onclick: function () { suite(false); } }));
+  }).catch(function (e) {
+    vider();
+    ecran.append(erreur(e.message));
+    if (suite) ecran.append(el('button', { texte: 'Continuer', onclick: function () { suite(false); } }));
   });
 }
 
@@ -380,7 +475,9 @@ function suiviDemiJournee(code, etat, d) {
 
 /* ───────────────────────────── démarrage ───────────────────────────── */
 var parametre = /[#&]c=([A-Za-z0-9]{6})/.exec(location.hash);
-if (parametre) listeCandidat(parametre[1].toUpperCase()); else accueil();
+var lienQuestionnaire = /[#&]q=([A-Za-z0-9_-]{20,})/.exec(location.hash);
+if (lienQuestionnaire) questionnaire(lienQuestionnaire[1]);
+else if (parametre) listeCandidat(parametre[1].toUpperCase()); else accueil();
 </script>
 </body>
 </html>
